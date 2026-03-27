@@ -4,7 +4,7 @@ import os
 import threading
 import requests
 from x_paths import PATHS
-from db_config import fetch_page_urls_one_by_one, update_page_status
+from db_config import fetch_page_urls_one_by_one, update_page_status,fetch_product_urls,update_product_details
 
 def read_data(file):
     with open(file, "r", encoding="utf-8") as f:
@@ -28,17 +28,20 @@ def book_data_parser(url_fetch, folder_name, store_list, lock, table_name):
 
         for book in books:
             title = book.xpath(PATHS["title"])
+            product_url = book.xpath(PATHS["Product_url"])
             img_url = book.xpath(PATHS["image_path"])
             price = book.xpath(PATHS["price_path"])
             stock = book.xpath(PATHS["stock_path"])
 
             store_dict = {
-                "title": title[0].strip() if title else "",
-                "img_url": "https://books.toscrape.com/" + img_url[0].strip() if img_url else "",
-                "price": price[0].strip() if price else "",
-                "stock": "".join(stock).strip() if stock else "",
+                "Title": title[0].strip() if title else "",
+                "Product_url": "https://books.toscrape.com/catalogue/" + product_url[0].strip() if product_url else "",
+                "Img_url": "https://books.toscrape.com/" + img_url[0].strip() if img_url else "",
+                "Price": price[0].strip() if price else "",
+                "Stock": "".join(stock).strip() if stock else "",
             }
             book_list.append(store_dict)
+            
 
         with lock:
             store_list.extend(book_list)
@@ -94,6 +97,65 @@ def main_parser(page_urls):
             t.join()
 
     return store_list
+
+def parse_product_detail(product_url, table_name):
+    try:
+        res = requests.get(product_url, timeout=20)
+        res.encoding = "utf-8"
+        tree = html.fromstring(res.text)
+
+        upc = tree.xpath(PATHS["upc"])
+        product_type = tree.xpath(PATHS["product_type"])
+        price_excl_tax = tree.xpath(PATHS["price_excl_tax"])
+        price_incl_tax = tree.xpath(PATHS["price_incl_tax"])
+        tax = tree.xpath(PATHS["tax"])
+        availability = tree.xpath(PATHS["availability_detail"])
+        description = tree.xpath(PATHS["description"])
+        category = tree.xpath(PATHS["category"])
+        star_rating = tree.xpath(PATHS["star_rating"])
+
+        rating_value = ""
+        if star_rating:
+            # example class => "star-rating Three"
+            parts = star_rating[0].split()
+            if len(parts) > 1:
+                rating_value = parts[-1]
+
+        detail_data = {
+            "upc": upc[0].strip() if upc else "",
+            "product_type": product_type[0].strip() if product_type else "",
+            "price_excl_tax": price_excl_tax[0].strip() if price_excl_tax else "",
+            "price_incl_tax": price_incl_tax[0].strip() if price_incl_tax else "",
+            "tax": tax[0].strip() if tax else "",
+            "availability": availability[0].strip() if availability else "",
+            "description": description[0].strip() if description else "",
+            "category": category[0].strip() if category else "",
+            "star_rating": rating_value,
+        }
+
+        update_product_details(table_name, product_url, detail_data)
+
+    except Exception as e:
+        print(f"Detail parse failed: {product_url} | {e}")
+
+def update_old_table_from_product_urls(table_name):
+    product_urls = list(fetch_product_urls(table_name))
+    batch_size = 10
+
+    for i in range(0, len(product_urls), batch_size):
+        batch = product_urls[i:i + batch_size]
+        threads = []
+
+        for product_url in batch:
+            t = threading.Thread(
+                target=parse_product_detail,
+                args=(product_url, table_name)
+            )
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
 
 def write_data(store_data):
     with open("Book.json", "w", encoding="utf-8") as f:
